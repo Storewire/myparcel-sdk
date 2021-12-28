@@ -2,14 +2,14 @@
 
 namespace MyParcelNL\Sdk\src\Support;
 
-use stdClass;
-use Countable;
-use Exception;
 use ArrayAccess;
-use Traversable;
 use ArrayIterator;
 use CachingIterator;
+use Countable;
+use Exception;
 use IteratorAggregate;
+use stdClass;
+use Traversable;
 
 /**
  * @property-read HigherOrderCollectionProxy $average
@@ -1708,14 +1708,42 @@ class Collection implements ArrayAccess, Countable, IteratorAggregate
      *
      * @return array
      */
-    public function toArray()
+    public function toArray(): array
     {
-        return array_map(function ($value) {
-            if (method_exists($value, 'toArray')) {
+        return array_map(
+            static function ($value) {
+            if ($value && method_exists($value, 'toArray')) {
                 return $value->toArray();
             }
             return $value;
         }, $this->items);
+    }
+
+    /**
+     * Get the collection of items as a plain array. Ignores null values in children if possible.
+     *
+     * @return array
+     */
+    public function toArrayWithoutNull(): array
+    {
+        return array_map(
+            function ($value) {
+                if (is_array($value)) {
+                    return $this->filterNull($value);
+                }
+
+                if ($value && method_exists($value, 'toArrayWithoutNull')) {
+                    return $value->toArrayWithoutNull();
+                }
+
+                if ($value && method_exists($value, 'toArray')) {
+                    return $value->toArray();
+                }
+
+                return $value;
+            },
+            $this->filterNull($this->items)
+        );
     }
 
     /**
@@ -1897,5 +1925,17 @@ class Collection implements ArrayAccess, Countable, IteratorAggregate
         }
 
         return new HigherOrderCollectionProxy($this, $key);
+    }
+
+    /**
+     * @param  array $value
+     *
+     * @return array
+     */
+    private function filterNull(array $value): array
+    {
+        return array_filter($value, static function ($item) {
+            return null !== $item;
+        });
     }
 }

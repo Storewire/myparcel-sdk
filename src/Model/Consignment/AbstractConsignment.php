@@ -4,24 +4,46 @@ declare(strict_types=1);
 
 namespace MyParcelNL\Sdk\src\Model\Consignment;
 
+use BadMethodCallException;
+use Exception;
+use MyParcelNL\Sdk\src\Concerns\HasApiKey;
 use MyParcelNL\Sdk\src\Concerns\HasCheckoutFields;
+use MyParcelNL\Sdk\src\Exception\InvalidConsignmentException;
 use MyParcelNL\Sdk\src\Exception\MissingFieldException;
+use MyParcelNL\Sdk\src\Exception\ValidationException;
 use MyParcelNL\Sdk\src\Helper\SplitStreet;
 use MyParcelNL\Sdk\src\Helper\TrackTraceUrl;
 use MyParcelNL\Sdk\src\Helper\ValidatePostalCode;
+use MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier;
+use MyParcelNL\Sdk\src\Model\Carrier\CarrierFactory;
 use MyParcelNL\Sdk\src\Model\MyParcelCustomsItem;
-use MyParcelNL\Sdk\src\Support\Helpers;
+use MyParcelNL\Sdk\src\Validator\ValidatorFactory;
 
-/**
- * A model of a consignment
- * Class Consignment
- */
-class AbstractConsignment
+abstract class AbstractConsignment
 {
     use HasCheckoutFields;
+    use HasPickupLocation;
+
+    /*
+     * Allows setting an API key for each shipment, so you can create multiple
+     *  shipments for different shops at the same time. This way you won't have to provide a shop ID.
+     */
+    use HasApiKey;
+
+    public const SHIPMENT_OPTION_AGE_CHECK      = 'age_check';
+    public const SHIPMENT_OPTION_INSURANCE      = 'insurance';
+    public const SHIPMENT_OPTION_LARGE_FORMAT   = 'large_format';
+    public const SHIPMENT_OPTION_ONLY_RECIPIENT = 'only_recipient';
+    public const SHIPMENT_OPTION_RETURN         = 'return';
+    public const SHIPMENT_OPTION_SIGNATURE      = 'signature';
+
+    public const EXTRA_OPTION_DELIVERY_DATE     = 'delivery_date';
+    public const EXTRA_OPTION_DELIVERY_MONDAY   = 'delivery_monday';
+    public const EXTRA_OPTION_DELIVERY_SATURDAY = 'delivery_saturday';
+    public const EXTRA_OPTION_MULTI_COLLO       = 'multi_collo';
 
     /**
-     * Consignment types
+     * Consignment types.
      */
     public const DELIVERY_TYPE_MORNING  = 1;
     public const DELIVERY_TYPE_STANDARD = 2;
@@ -33,15 +55,15 @@ class AbstractConsignment
      */
     public const DELIVERY_TYPE_PICKUP_EXPRESS = 5;
 
-    public const DELIVERY_TYPE_MORNING_NAME  = "morning";
-    public const DELIVERY_TYPE_STANDARD_NAME = "standard";
-    public const DELIVERY_TYPE_EVENING_NAME  = "evening";
-    public const DELIVERY_TYPE_PICKUP_NAME   = "pickup";
+    public const DELIVERY_TYPE_MORNING_NAME  = 'morning';
+    public const DELIVERY_TYPE_STANDARD_NAME = 'standard';
+    public const DELIVERY_TYPE_EVENING_NAME  = 'evening';
+    public const DELIVERY_TYPE_PICKUP_NAME   = 'pickup';
 
     /**
      * @deprecated Since November 2019 is it no longer possible to use pickup express.
      */
-    public const DELIVERY_TYPE_PICKUP_EXPRESS_NAME = "pickup_express";
+    public const DELIVERY_TYPE_PICKUP_EXPRESS_NAME = 'pickup_express';
 
     public const DELIVERY_TYPES_IDS = [
         self::DELIVERY_TYPE_MORNING,
@@ -71,7 +93,7 @@ class AbstractConsignment
     public const DEFAULT_DELIVERY_TYPE_NAME = self::DELIVERY_TYPE_STANDARD_NAME;
 
     /**
-     * Customs declaration types
+     * Customs declaration types.
      */
     public const PACKAGE_CONTENTS_COMMERCIAL_GOODS   = 1;
     public const PACKAGE_CONTENTS_COMMERCIAL_SAMPLES = 2;
@@ -80,17 +102,17 @@ class AbstractConsignment
     public const PACKAGE_CONTENTS_RETRUN_SHIPMENT    = 5;
 
     /**
-     * Package types
+     * Package types.
      */
     public const PACKAGE_TYPE_PACKAGE       = 1;
     public const PACKAGE_TYPE_MAILBOX       = 2;
     public const PACKAGE_TYPE_LETTER        = 3;
     public const PACKAGE_TYPE_DIGITAL_STAMP = 4;
 
-    public const PACKAGE_TYPE_PACKAGE_NAME       = "package";
-    public const PACKAGE_TYPE_MAILBOX_NAME       = "mailbox";
-    public const PACKAGE_TYPE_LETTER_NAME        = "letter";
-    public const PACKAGE_TYPE_DIGITAL_STAMP_NAME = "digital_stamp";
+    public const PACKAGE_TYPE_PACKAGE_NAME       = 'package';
+    public const PACKAGE_TYPE_MAILBOX_NAME       = 'mailbox';
+    public const PACKAGE_TYPE_LETTER_NAME        = 'letter';
+    public const PACKAGE_TYPE_DIGITAL_STAMP_NAME = 'digital_stamp';
 
     public const PACKAGE_TYPES_IDS = [
         self::PACKAGE_TYPE_PACKAGE,
@@ -158,17 +180,18 @@ class AbstractConsignment
 
     /**
      * @var array
+     * @deprecated use getLocalInsurancePossibilities()
      */
     public const INSURANCE_POSSIBILITIES_LOCAL = [];
 
     /**
-     * @var string
+     * @var int
      */
-    protected $local_cc = '';
+    public const DESCRIPTION_MAX_LENGTH = 50;
 
     /**
      * @internal
-     * @var string
+     * @var null|string
      */
     public $reference_identifier;
 
@@ -182,23 +205,23 @@ class AbstractConsignment
      * @internal
      * @var string|null
      */
-    public $api_key;
+    public $barcode;
 
     /**
      * @internal
      * @var string|null
      */
-    public $barcode;
+    public $externalIdentifier;
 
     /**
      * @internal
      * @var int
      */
-    public $status = null;
+    public $status;
 
     /**
      * @internal
-     * @var integer
+     * @var int
      */
     public $shop_id;
 
@@ -213,6 +236,12 @@ class AbstractConsignment
      * @var string
      */
     public $city;
+
+    /**
+     * @internal
+     * @var string
+     */
+    public $region;
 
     /**
      * @internal
@@ -276,13 +305,13 @@ class AbstractConsignment
 
     /**
      * @internal
-     * @var integer
+     * @var int
      */
     public $package_type;
 
     /**
      * @internal
-     * @var integer
+     * @var int
      */
     public $delivery_type = self::DEFAULT_DELIVERY_TYPE;
 
@@ -294,31 +323,31 @@ class AbstractConsignment
 
     /**
      * @internal
-     * @var boolean
+     * @var bool|null
      */
     public $only_recipient;
 
     /**
      * @internal
-     * @var boolean
+     * @var bool|null
      */
     public $signature;
 
     /**
      * @internal
-     * @var boolean
+     * @var bool|null
      */
     public $return;
 
     /**
      * @internal
-     * @var boolean
+     * @var bool|null
      */
     public $large_format;
 
     /**
      * @internal
-     * @var boolean
+     * @var bool|null
      */
     public $age_check;
 
@@ -359,52 +388,19 @@ class AbstractConsignment
     public $items = [];
 
     /**
-     * @internal
-     * @var string
+     * @var string|\MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier
      */
-    public $pickup_cc;
+    protected $carrierClass;
 
     /**
-     * @internal
-     * @var string
-     */
-    public $pickup_postal_code;
-
-    /**
-     * @internal
-     * @var string
-     */
-    public $pickup_street;
-
-    /**
-     * @internal
-     * @var string
-     */
-    public $pickup_city;
-
-    /**
-     * @internal
-     * @var string
-     */
-    public $pickup_number;
-
-    /**
-     * @internal
-     * @var string
-     */
-    public $pickup_location_name;
-
-    /**
-     * @internal
-     * @var string
-     */
-    public $pickup_location_code = '';
-
-    /**
-     * @internal
      * @var null|string
      */
-    public $retail_network_id;
+    protected $validatorClass;
+
+    /**
+     * @var null|\MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier
+     */
+    private $carrier;
 
     /**
      * @var bool
@@ -422,13 +418,85 @@ class AbstractConsignment
     private $save_recipient_address = true;
 
     /**
-     * @var Helpers
+     * @var null|\MyParcelNL\Sdk\src\Model\Consignment\DropOffPoint
      */
-    private $helper;
+    protected $drop_off_point;
 
+    /**
+     * @throws \Exception
+     */
     public function __construct()
     {
-        $this->helper = new Helpers();
+        $this->carrier = $this->carrierClass
+            ? CarrierFactory::createFromClass($this->carrierClass)
+            : null;
+    }
+
+    /**
+     * @return null|\MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier
+     */
+    final public function getCarrier(): ?AbstractCarrier
+    {
+        return $this->carrier;
+    }
+
+    /**
+     * @param  string $deliveryType
+     *
+     * @return bool
+     */
+    public function canHaveDeliveryType(string $deliveryType): bool
+    {
+        $allowedDeliveryTypes = $this->getAllowedDeliveryTypes();
+        if (self::PACKAGE_TYPE_PACKAGE !== $this->getPackageType()) {
+            $allowedDeliveryTypes = [self::DELIVERY_TYPE_STANDARD];
+        }
+
+        return in_array($deliveryType, $allowedDeliveryTypes, true);
+    }
+
+    /**
+     * @param  string $option
+     *
+     * @return bool
+     */
+    public function canHaveExtraOption(string $option): bool
+    {
+        return in_array($option, $this->getAllowedExtraOptions(), true);
+    }
+
+    /**
+     * @param  string $packageType
+     *
+     * @return bool
+     */
+    public function canHavePackageType(string $packageType): bool
+    {
+        return in_array($packageType, $this->getAllowedPackageTypes(), true);
+    }
+
+    /**
+     * @param  string $option
+     *
+     * @return bool
+     */
+    public function canHaveShipmentOption(string $option): bool
+    {
+        $isPackage         = $this->getPackageType() === self::PACKAGE_TYPE_PACKAGE;
+        $optionIsAvailable = in_array($option, $this->getAllowedShipmentOptions(), true);
+        return $isPackage && $optionIsAvailable;
+    }
+
+    /**
+     * The id of the consignment
+     * Save this id in your database
+     *
+     * @return int
+     * @deprecated Use getConsignmentId instead
+     */
+    public function getMyParcelConsignmentId(): int
+    {
+        return $this->getConsignmentId();
     }
 
     /**
@@ -436,34 +504,64 @@ class AbstractConsignment
      */
     public function getInsurancePossibilities(): array
     {
-        return static::INSURANCE_POSSIBILITIES_LOCAL;
+        return $this->getLocalInsurancePossibilities();
+    }
+
+    /**
+     * @return string
+     */
+    public function getReferenceIdentifier(): string
+    {
+        return (string) $this->reference_identifier;
     }
 
     /**
      * @return string|null
+     * @deprecated use getReferenceIdentifier()
      */
-    public function getReferenceId()
+    public function getReferenceId(): ?string
     {
-        return $this->reference_identifier;
+        return $this->getReferenceIdentifier();
     }
 
     /**
-     * @param mixed $reference_identifier
+     * @param  int $id
      *
-     * @return $this
+     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @internal
+     * @deprecated Use setConsignmentId instead
      */
-    public function setReferenceId(?string $reference_identifier): self
+    public function setMyParcelConsignmentId(int $id): AbstractConsignment
     {
-        if ($reference_identifier !== null) {
-            $this->reference_identifier = (string) $reference_identifier;
-        }
+        return $this->setConsignmentId($id);
+    }
+
+    /**
+     * @param  string|null $referenceIdentifier
+     *
+     * @return self
+     */
+    public function setReferenceIdentifier(?string $referenceIdentifier): self
+    {
+        $this->reference_identifier = $referenceIdentifier;
 
         return $this;
     }
 
     /**
+     * @param  string|null $referenceIdentifier
+     *
+     * @return self
+     * @deprecated use setReferenceIdentifier()
+     */
+    public function setReferenceId(?string $referenceIdentifier): self
+    {
+        return $this->setReferenceIdentifier($referenceIdentifier);
+    }
+
+    /**
      * The id of the consignment
-     * Save this id in your database
+     * Save this id in your database.
      *
      * @return int|null
      */
@@ -473,9 +571,9 @@ class AbstractConsignment
     }
 
     /**
-     * @param int|null $id
+     * @param  int|null $id
      *
-     * @return $this
+     * @return self
      * @internal
      * The id of the consignment
      */
@@ -487,44 +585,28 @@ class AbstractConsignment
     }
 
     /**
-     * @return string|null
-     */
-    public function getApiKey(): ?string
-    {
-        return $this->api_key;
-    }
-
-    /**
-     * Set the api key for each shipment.
-     * The key must be given to each shipment. So you can create multiple shipments
-     * in one time for different shops. This way you will not have to ask for the
-     * shop ID. The field shop ID is therefore not necessary.
-     * Required: Yes
+     * @param  null|\MyParcelNL\Sdk\src\Model\Consignment\DropOffPoint $dropOffPoint
      *
-     * @param string $apiKey
-     *
-     * @return $this
+     * @return self
      */
-    public function setApiKey(string $apiKey): self
+    public function setDropOffPoint(?DropOffPoint $dropOffPoint): self
     {
-        $this->api_key = $apiKey;
-
+        $this->drop_off_point = $dropOffPoint;
         return $this;
     }
 
     /**
-     * @return int
+     * @return null|\MyParcelNL\Sdk\src\Model\Consignment\DropOffPoint
      */
-    public function getCarrierId(): int
+    public function getDropOffPoint(): ?DropOffPoint
     {
-        /** @noinspection PhpUndefinedClassConstantInspection */
-        return static::CARRIER_ID;
+        return $this->drop_off_point;
     }
 
     /**
-     * @param bool $value
+     * @param  bool $value
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
     public function setMultiCollo(bool $value = true): self
     {
@@ -550,14 +632,35 @@ class AbstractConsignment
     }
 
     /**
-     * @param string|null $barcode
+     * @param  string|null $barcode
      *
-     * @return $this
+     * @return self
      * @internal
      */
     public function setBarcode(?string $barcode): self
     {
         $this->barcode = $barcode;
+
+        return $this;
+    }
+
+    /**
+     * @return string|null
+     */
+    public function getExternalIdentifier(): ?string
+    {
+        return $this->externalIdentifier;
+    }
+
+    /**
+     * @param  null|string  $externalIdentifier
+     *
+     * @return self
+     * @internal
+     */
+    public function setExternalIdentifier(?string $externalIdentifier): self
+    {
+        $this->externalIdentifier = $externalIdentifier;
 
         return $this;
     }
@@ -588,7 +691,7 @@ class AbstractConsignment
      *          36 inactive - delivered - at recipient
      *          37 inactive - delivered - ready for pickup
      *          38 inactive - delivered - package picked up
-     *          99 inactive - unknown
+     *          99 inactive - unknown.
      *
      * @return int
      */
@@ -598,14 +701,14 @@ class AbstractConsignment
     }
 
     /**
-     * Status of the consignment
+     * Status of the consignment.
      *
-     * @param int $status
+     * @param  int $status
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      * @internal
      */
-    public function setStatus($status): self
+    public function setStatus(int $status): self
     {
         $this->status = $status;
 
@@ -613,7 +716,7 @@ class AbstractConsignment
     }
 
     /**
-     * @return integer|null
+     * @return int|null
      */
     public function getShopId(): int
     {
@@ -621,18 +724,18 @@ class AbstractConsignment
     }
 
     /**
-     * @param mixed $shop_id
+     * @param  mixed $shopId
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      * @internal
      * The shop id to which this shipment belongs
      * When the store ID is not specified, the API will look at the API key.
      * Required: No
      * @internal
      */
-    public function setShopId($shop_id): self
+    public function setShopId(int $shopId): self
     {
-        $this->shop_id = $shop_id;
+        $this->shop_id = $shopId;
 
         return $this;
     }
@@ -651,13 +754,13 @@ class AbstractConsignment
      * <br>
      * Pattern: [A-Z]{2}<br>
      * Example: NL, BE, CW<br>
-     * Required: Yes
+     * Required: Yes.
      *
-     * @param string $cc
+     * @param  string $cc
      *
-     * @return $this
+     * @return self
      */
-    public function setCountry($cc)
+    public function setCountry($cc): self
     {
         $this->cc = $cc;
 
@@ -665,18 +768,18 @@ class AbstractConsignment
     }
 
     /**
-     * Check if the address is outside the EU
+     * Check if the address is outside the EU.
      *
      * @return bool
      * @todo move to hasCountry trait maken
      */
-    public function isCdCountry()
+    public function isCdCountry(): bool
     {
         return false === $this->isEuCountry();
     }
 
     /**
-     * Check if the address is inside the EU
+     * Check if the address is inside the EU.
      *
      * @return bool
      * @todo move to hasCountry
@@ -698,12 +801,32 @@ class AbstractConsignment
     }
 
     /**
+     * @return string|null
+     */
+    public function getRegion(): ?string
+    {
+        return $this->region;
+    }
+
+    /**
+     * @param  string|null  $region
+     *
+     * @return self
+     */
+    public function setRegion(?string $region): self
+    {
+        $this->region = $region;
+
+        return $this;
+    }
+
+    /**
      * The address city
-     * Required: Yes
+     * Required: Yes.
      *
-     * @param string $city
+     * @param  string $city
      *
-     * @return $this
+     * @return self
      */
     public function setCity($city)
     {
@@ -736,11 +859,11 @@ class AbstractConsignment
 
     /**
      * The address street name
-     * Required: Yes or use setFullStreet()
+     * Required: Yes or use setFullStreet().
      *
-     * @param string $street
+     * @param  string $street
      *
-     * @return $this
+     * @return self
      */
     public function setStreet($street)
     {
@@ -750,7 +873,7 @@ class AbstractConsignment
     }
 
     /**
-     * Get additional information for the street that should not be included in the street field
+     * Get additional information for the street that should not be included in the street field.
      *
      * @return string|null
      * @todo move to hasStreet
@@ -775,23 +898,24 @@ class AbstractConsignment
 
     /**
      * The street additional info
-     * Required: No
+     * Required: No.
      *
-     * @param string $street_additional_info
+     * @param  string $streetAdditionalInfo
      *
-     * @return $this
+     * @return self
      */
-    public function setStreetAdditionalInfo(string $street_additional_info): self
+    public function setStreetAdditionalInfo(string $streetAdditionalInfo): self
     {
-        $this->street_additional_info = $street_additional_info;
+        $this->street_additional_info = $streetAdditionalInfo;
 
         return $this;
     }
 
     /**
-     * Get entire street
+     * Get entire street.
      *
      * @return string Entire street
+     * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      * @var bool
      * @todo move to hasCountry
      */
@@ -804,7 +928,7 @@ class AbstractConsignment
         }
 
         if ($this->getBoxNumber()) {
-            $fullStreet .= ' ' . splitstreet::BOX_NL . ' ' . $this->getBoxNumber();
+            $fullStreet .= ' ' . SplitStreet::BOX_NL . ' ' . $this->getBoxNumber();
         }
 
         if ($this->getNumberSuffix()) {
@@ -816,11 +940,11 @@ class AbstractConsignment
 
     /**
      * Splitting a full NL address and save it in this object
-     * Required: Yes or use setStreet()
+     * Required: Yes or use setStreet().
      *
-     * @param string $fullStreet
+     * @param  string $fullStreet
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      * @throws MissingFieldException
      * @throws \BadMethodCallException
      * @throws \Exception
@@ -833,22 +957,23 @@ class AbstractConsignment
             );
         }
 
-        if (empty($this->local_cc)) {
-            throw new \BadMethodCallException('Can not create a shipment when the local country code is empty.');
+        if (empty($this->getLocalCountryCode())) {
+            throw new BadMethodCallException('Can not create a shipment when the local country code is empty.');
         }
-        $fullStreet = SplitStreet::splitStreet($fullStreet, $this->local_cc, $this->getCountry());
-        $this->setStreet($fullStreet->getStreet());
-        $this->setNumber($fullStreet->getNumber());
-        $this->setBoxNumber($fullStreet->getBoxNumber());
-        $this->setNumberSuffix($fullStreet->getNumberSuffix());
+
+        $splitStreet = SplitStreet::splitStreet($fullStreet, $this->getLocalCountryCode(), $this->getCountry());
+        $this->setStreet($splitStreet->getStreet());
+        $this->setNumber($splitStreet->getNumber());
+        $this->setBoxNumber($splitStreet->getBoxNumber());
+        $this->setNumberSuffix($splitStreet->getNumberSuffix());
 
         return $this;
     }
 
     /**
-     * @param bool $value
+     * @param  bool $value
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
     public function setSaveRecipientAddress(bool $value): self
     {
@@ -866,17 +991,15 @@ class AbstractConsignment
     }
 
     /**
-     * @param string $barcode
-     * @param string $postalCode
-     * @param string $countryCode
+     * @param  string $barcode
+     * @param  string $postalCode
+     * @param  string $countryCode
      *
      * @return string
      */
     public function getBarcodeUrl(string $barcode, string $postalCode, string $countryCode): string
     {
-        $barcodeUrl = TrackTraceUrl::create($barcode, $postalCode, $countryCode);
-
-        return $barcodeUrl;
+        return TrackTraceUrl::create($barcode, $postalCode, $countryCode);
     }
 
     /**
@@ -892,11 +1015,11 @@ class AbstractConsignment
      * Whole numeric value
      * Pattern: [0-9]+
      * Example: 10. 20. NOT 2,3
-     * Required: Yes for NL
+     * Required: Yes for NL.
      *
-     * @param mixed $number
+     * @param  mixed $number
      *
-     * @return $this
+     * @return self
      */
     public function setNumber($number): self
     {
@@ -915,11 +1038,11 @@ class AbstractConsignment
 
     /**
      * Street number suffix.
-     * Required: no
+     * Required: no.
      *
-     * @param string|null $numberSuffix
+     * @param  string|null $numberSuffix
      *
-     * @return $this
+     * @return self
      */
     public function setNumberSuffix(?string $numberSuffix): self
     {
@@ -938,11 +1061,11 @@ class AbstractConsignment
 
     /**
      * Street number suffix.
-     * Required: no
+     * Required: no.
      *
-     * @param string|null $boxNumber
+     * @param  string|null $boxNumber
      *
-     * @return $this
+     * @return self
      */
     public function setBoxNumber(?string $boxNumber): self
     {
@@ -952,12 +1075,24 @@ class AbstractConsignment
     }
 
     /**
-     * @param array $consignmentEncoded
+     * @param  array $consignmentEncoded
      *
      * @return array
+     * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
     public function encodeStreet(array $consignmentEncoded): array
     {
+        if ($this->getCountry() === self::CC_NL) {
+            return array_merge_recursive($consignmentEncoded, [
+                'recipient' => [
+                    'street'                 => $this->getStreet(true),
+                    'street_additional_info' => $this->getStreetAdditionalInfo(),
+                    'number'                 => $this->getNumber(),
+                    'number_suffix'          => (string) $this->getNumberSuffix(),
+                ],
+            ]);
+        }
+
         $consignmentEncoded['recipient']['street']                 = $this->getFullStreet(true);
         $consignmentEncoded['recipient']['street_additional_info'] = $this->getStreetAdditionalInfo();
 
@@ -966,15 +1101,16 @@ class AbstractConsignment
 
     /**
      * Check if address is correct
-     * Only for Dutch addresses
+     * Only for Dutch addresses.
      *
-     * @param $fullStreet
+     * @param  string $fullStreet
      *
      * @return bool
+     * @deprecated Use ValidateStreet::validate()
      */
     public function isCorrectAddress(string $fullStreet): bool
     {
-        $localCountry       = $this->local_cc;
+        $localCountry       = $this->getLocalCountryCode();
         $destinationCountry = $this->getCountry();
 
         return SplitStreet::isCorrectStreet($fullStreet, $localCountry, $destinationCountry);
@@ -983,15 +1119,15 @@ class AbstractConsignment
     /**
      * @return string|null
      */
-    public function getPostalCode()
+    public function getPostalCode(): ?string
     {
         return $this->postal_code;
     }
 
     /**
-     * @param string $postalCode
+     * @param  string $postalCode
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      * @throws \BadMethodCallException
      * @throws \Exception
      */
@@ -1002,12 +1138,12 @@ class AbstractConsignment
                 'First set the country code with setCountry() before running setPostalCode()'
             );
         }
-        if (empty($this->local_cc)) {
-            throw new \BadMethodCallException('Can not create a shipment when the local country code is empty.');
+        if (empty($this->getLocalCountryCode())) {
+            throw new BadMethodCallException('Can not create a shipment when the local country code is empty.');
         }
 
         if (! ValidatePostalCode::validate($postalCode, $this->getCountry())) {
-            throw new \BadMethodCallException('Invalid postal code');
+            throw new BadMethodCallException('Invalid postal code');
         }
 
         $this->postal_code = $postalCode;
@@ -1025,11 +1161,11 @@ class AbstractConsignment
 
     /**
      * The person at this address
-     * Required: Yes
+     * Required: Yes.
      *
-     * @param string $person
+     * @param  string $person
      *
-     * @return $this
+     * @return self
      */
     public function setPerson(string $person): self
     {
@@ -1048,11 +1184,11 @@ class AbstractConsignment
 
     /**
      * Company name
-     * Required: no
+     * Required: no.
      *
-     * @param string|null $company
+     * @param  string|null $company
      *
-     * @return $this
+     * @return self
      */
     public function setCompany(?string $company): self
     {
@@ -1071,11 +1207,11 @@ class AbstractConsignment
 
     /**
      * The address email
-     * Required: no
+     * Required: no.
      *
-     * @param string $email
+     * @param  string $email
      *
-     * @return $this
+     * @return self
      */
     public function setEmail(string $email): self
     {
@@ -1094,13 +1230,13 @@ class AbstractConsignment
 
     /**
      * The address phone
-     * Required: no
+     * Required: no.
      *
-     * @param string|null $phone
+     * @param  string|null $phone
      *
-     * @return $this
+     * @return self
      */
-    public function setPhone(?string $phone): ?self
+    public function setPhone(?string $phone): self
     {
         $this->phone = $phone;
 
@@ -1108,7 +1244,7 @@ class AbstractConsignment
     }
 
     /**
-     * @param int|null $default
+     * @param  int|null $default
      *
      * @return int|null
      */
@@ -1120,19 +1256,27 @@ class AbstractConsignment
     /**
      * The package type
      * For international shipment only package type 1 is allowed
-     * Pattern: [1 – 3]<br>
+     * Pattern: [1 – 4]<br>
      * Example:
      *          1. package
      *          2. mailbox package
      *          3. letter
-     * Required: Yes
+     *          4. digital stamp
+     * Required: Yes.
      *
-     * @param int $packageType
+     * @param  int $packageType
      *
-     * @return $this
+     * @return self
+     * @throws \Exception
      */
     public function setPackageType(int $packageType): self
     {
+        $packageTypeMap = array_flip(self::PACKAGE_TYPES_NAMES_IDS_MAP);
+
+        if (! in_array($packageTypeMap[$packageType], $this->getAllowedPackageTypes(), true)) {
+            throw new Exception('Use the correct package type for shipment:' . $this->consignment_id);
+        }
+
         $this->package_type = $packageType;
 
         return $this;
@@ -1148,14 +1292,13 @@ class AbstractConsignment
 
     /**
      * The delivery type for the package
-     * Required: Yes if delivery_date has been specified
+     * Required: Yes if delivery_date has been specified.
      *
-     * @param int  $deliveryType
-     * @param bool $needDeliveryDate
+     * @param  int $deliveryType
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
-    public function setDeliveryType(int $deliveryType, bool $needDeliveryDate = false): self
+    public function setDeliveryType(int $deliveryType): self
     {
         $this->delivery_type = $deliveryType;
 
@@ -1163,9 +1306,9 @@ class AbstractConsignment
     }
 
     /**
-     * @param bool $value
+     * @param  bool $value
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
     public function setAutoDetectPickup(bool $value): self
     {
@@ -1194,115 +1337,91 @@ class AbstractConsignment
      * The delivery date time for this shipment
      * Pattern: YYYY-MM-DD | YYYY-MM-DD HH:MM:SS
      * Example: 2017-01-01 | 2017-01-01 00:00:00
-     * Required: Yes if delivery type has been specified
+     * Required: Yes if delivery type has been specified.
      *
-     * @param string|null $delivery_date
+     * @param  string|null $deliveryDate
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     * @throws \BadMethodCallException
+     * @return self
      */
-    public function setDeliveryDate(?string $delivery_date): self
+    public function setDeliveryDate(?string $deliveryDate): self
     {
-        if (! $delivery_date) {
+        if (! $deliveryDate || ! $this->canHaveExtraOption(self::EXTRA_OPTION_DELIVERY_DATE)) {
             $this->delivery_date = null;
-
             return $this;
         }
 
-        $result = preg_match(self::DATE_REGEX, $delivery_date, $matches);
+        $result = preg_match(self::DATE_REGEX, $deliveryDate, $matches);
 
         if ($result) {
-            $delivery_date = (string) $delivery_date . ' 00:00:00';
+            $deliveryDate .= ' 00:00:00';
         } else {
-            $result = preg_match(self::DATE_TIME_REGEX, $delivery_date, $matches);
+            $result = preg_match(self::DATE_TIME_REGEX, $deliveryDate, $matches);
 
             if (! $result) {
-                throw new \BadMethodCallException(
-                    'Make sure the date ('
-                    . $delivery_date
-                    . ') is correct, like pattern: YYYY-MM-DD HH:MM:SS'
-                    . json_encode($matches)
+                throw new BadMethodCallException(
+                    'Make sure the date (' . $deliveryDate . ') is correct, like pattern: YYYY-MM-DD HH:MM:SS' . json_encode(
+                        $matches
+                    )
                 );
             }
         }
 
-        $this->delivery_date = (string) $delivery_date;
+        $this->delivery_date = $deliveryDate;
 
         return $this;
-    }
-
-    /**
-     * @return bool
-     */
-    public function isOnlyRecipient(): bool
-    {
-        return false;
     }
 
     /**
      * Deliver the package to the recipient only
-     * Required: No
+     * Required: No.
      *
-     * @param bool $only_recipient
+     * @param  bool $onlyRecipient
      *
-     * @return $this
+     * @return self
      */
-    public function setOnlyRecipient(bool $only_recipient): self
+    public function setOnlyRecipient(bool $onlyRecipient): self
     {
-        if ($only_recipient) {
-            throw new \BadMethodCallException('Only recipient has to be false in ' . static::class);
-        }
+        $this->only_recipient = $onlyRecipient && $this->canHaveShipmentOption(self::SHIPMENT_OPTION_ONLY_RECIPIENT);
 
         return $this;
-    }
-
-    /**
-     * @return bool
-     */
-    public function isSignature(): bool
-    {
-        return false;
     }
 
     /**
      * * Package must be signed for
-     * Required: No
+     * Required: No.
      *
-     * @param bool $signature
+     * @param  bool $signature
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
     public function setSignature(bool $signature): self
     {
-        if ($signature) {
-            throw new \BadMethodCallException('Signature has to be false in ' . static::class);
-        }
+        $this->signature = $signature && $this->canHaveShipmentOption(self::SHIPMENT_OPTION_SIGNATURE);
 
         return $this;
     }
 
     /**
-     * Return the package if the recipient is not home
+     * Return the package if the recipient is not home.
      *
-     * @return boolean
+     * @return null|bool
      */
-    public function isReturn()
+    public function isReturn(): ?bool
     {
         return $this->return;
     }
 
     /**
      * Return the package if the recipient is not home
-     * Required: No
+     * Required: No.
      *
-     * @param bool $return
+     * @param  bool $return
      *
-     * @return $this
-     * @throws \Exception
+     * @return self
      */
     public function setReturn(bool $return): self
     {
-        $this->return = $this->canHaveOption($return);
+        $this->return = $return && $this->canHaveShipmentOption(self::SHIPMENT_OPTION_RETURN);
 
         return $this;
     }
@@ -1310,49 +1429,63 @@ class AbstractConsignment
     /**
      * @return bool
      */
-    public function isLargeFormat(): bool
+    public function isOnlyRecipient(): ?bool
     {
-        return false;
+        return $this->only_recipient;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isSignature(): ?bool
+    {
+        return $this->signature;
+    }
+
+    /**
+     * @return boolean
+     */
+    public function isLargeFormat(): ?bool
+    {
+        return $this->large_format;
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasAgeCheck(): ?bool
+    {
+        return $this->age_check;
     }
 
     /**
      * Large format package
-     * Required: No
+     * Required: No.
      *
-     * @param bool $largeFormat
+     * @param  bool $largeFormat
      *
-     * @return $this
+     * @return self
+     * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
     public function setLargeFormat(bool $largeFormat): self
     {
-        if ($largeFormat) {
-            throw new \BadMethodCallException('Large format has to be false in ' . static::class);
-        }
+        $this->large_format = $largeFormat && $this->isPackage();
 
         return $this;
     }
 
     /**
-     * @return bool
-     */
-    public function hasAgeCheck(): bool
-    {
-        return false;
-    }
-
-    /**
      * Age check
-     * Required: No
+     * Required: No.
      *
-     * @param bool $ageCheck
+     * @param  bool $ageCheck
      *
      * @return AbstractConsignment
+     * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
     public function setAgeCheck(bool $ageCheck): self
     {
-        if ($ageCheck) {
-            throw new \BadMethodCallException('Age check has to be false in ' . static::class);
-        }
+        $this->age_check = $ageCheck && $this->isPackage();
 
         return $this;
     }
@@ -1367,16 +1500,16 @@ class AbstractConsignment
 
     /**
      * This description will appear on the shipment label
-     * Note: This will be overridden for return shipment by the following: Retour – 3SMYPAMYPAXXXXXX
-     * Required: No
+     * Note: This will be overridden for return shipment by the following: Retour – 3SMYPAXXXXXX
+     * Required: No.
      *
-     * @param mixed $label_description
+     * @param  mixed $labelDescription
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
-    public function setLabelDescription($label_description): self
+    public function setLabelDescription($labelDescription): self
     {
-        $this->label_description = (string) $label_description;
+        $this->label_description = (string) $labelDescription;
 
         return $this;
     }
@@ -1392,37 +1525,25 @@ class AbstractConsignment
     /**
      * Insurance price for the package.
      * Composite type containing integer and currency. The amount is without decimal separators.
-     * Required: No
+     * Required: No.
      *
-     * @param int|null $insurance
+     * @param  int|null $insurance
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      * @throws \Exception
      */
     public function setInsurance(?int $insurance): self
     {
-        if (null === $insurance) {
-            $this->insurance = null;
-
+        if (! $insurance || ! $this->canHaveShipmentOption(self::SHIPMENT_OPTION_INSURANCE)) {
+            $this->insurance = 0;
             return $this;
         }
 
-        if (empty(static::INSURANCE_POSSIBILITIES_LOCAL)) {
-            throw new \BadMethodCallException('Property insurance_possibilities_local not found in ' . static::class);
-        }
-
-        if (empty($this->local_cc)) {
-            throw new \BadMethodCallException('Property local_cc not found in ' . static::class);
-        }
-
-        if (! in_array($insurance, static::INSURANCE_POSSIBILITIES_LOCAL) && $this->getCountry() == $this->local_cc) {
-            throw new \BadMethodCallException(
-                'Insurance must be one of ' . implode(', ', static::INSURANCE_POSSIBILITIES_LOCAL)
+        if (! in_array($insurance, $this->getLocalInsurancePossibilities(), true)
+            && $this->getCountry() === $this->getLocalCountryCode()) {
+            throw new BadMethodCallException(
+                'Insurance must be one of ' . implode(', ', $this->getLocalInsurancePossibilities())
             );
-        }
-
-        if (! $this->canHaveOption()) {
-            $insurance = 0;
         }
 
         $this->insurance = $insurance;
@@ -1431,15 +1552,15 @@ class AbstractConsignment
     }
 
     /**
-     * Required: Yes for non-EU shipments and digital stamps
+     * Required: Yes for non-EU shipments and digital stamps.
      *
-     * @param array $physical_properties
+     * @param  array $physicalProperties
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
-    public function setPhysicalProperties(array $physical_properties): self
+    public function setPhysicalProperties(array $physicalProperties): self
     {
-        $this->physical_properties = $physical_properties;
+        $this->physical_properties = $physicalProperties;
 
         return $this;
     }
@@ -1453,7 +1574,7 @@ class AbstractConsignment
     }
 
     /**
-     * @return integer
+     * @return int
      */
     public function getContents(): int
     {
@@ -1470,11 +1591,11 @@ class AbstractConsignment
      *          3. documents
      *          4. gifts
      *          5. return shipment
-     * Required: Yes for shipping outside EU
+     * Required: Yes for shipping outside EU.
      *
-     * @param int $contents
+     * @param  int $contents
      *
-     * @return $this
+     * @return self
      */
     public function setContents(int $contents): self
     {
@@ -1493,11 +1614,11 @@ class AbstractConsignment
 
     /**
      * The invoice number for the commercial goods or samples of package contents.
-     * Required: Yes for international shipments
+     * Required: Yes for international shipments.
      *
-     * @param string $invoice
+     * @param  string $invoice
      *
-     * @return $this
+     * @return self
      */
     public function setInvoice(string $invoice): self
     {
@@ -1516,11 +1637,11 @@ class AbstractConsignment
 
     /**
      * A CustomsItem objects with description in the package.
-     * Required: Yes for international shipments
+     * Required: Yes for international shipments.
      *
-     * @param \MyParcelNL\Sdk\src\Model\MyParcelCustomsItem $item
+     * @param  \MyParcelNL\Sdk\src\Model\MyParcelCustomsItem $item
      *
-     * @return $this
+     * @return self
      * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
     public function addItem(MyParcelCustomsItem $item): self
@@ -1533,233 +1654,15 @@ class AbstractConsignment
     }
 
     /**
-     * @return string|null
-     */
-    public function getPickupCountry(): ?string
-    {
-        return $this->pickup_cc;
-    }
-
-    /**
-     * @param string $pickupCountry
-     *
-     * @return AbstractConsignment
-     */
-    public function setPickupCountry(string $pickupCountry): self
-    {
-        $this->pickup_cc = $pickupCountry;
-
-        return $this;
-    }
-
-    /**
-     * @return string|null
-     */
-    public function getPickupPostalCode(): ?string
-    {
-        return $this->pickup_postal_code;
-    }
-
-    /**
-     * Pattern:  d{4}\s?[A-Z]{2}
-     * Example:  2132BH
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_postal_code
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupPostalCode(string $pickup_postal_code): self
-    {
-        $this->pickup_postal_code = $pickup_postal_code;
-
-        return $this;
-    }
-
-    /**
-     * @return string|null
-     */
-    public function getPickupStreet(): ?string
-    {
-        return $this->pickup_street;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Burgemeester van Stamplein
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_street
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupStreet(string $pickup_street): self
-    {
-        $this->pickup_street = $pickup_street;
-
-        return $this;
-    }
-
-    /**
-     * @return string|null
-     */
-    public function getPickupCity(): ?string
-    {
-        return $this->pickup_city;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Hoofddorp
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_city
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupCity(string $pickup_city): self
-    {
-        $this->pickup_city = $pickup_city;
-
-        return $this;
-    }
-
-    /**
-     * @return string|null
-     */
-    public function getPickupNumber(): ?string
-    {
-        return $this->pickup_number;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  270
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_number
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupNumber(string $pickup_number): self
-    {
-        $this->pickup_number = (string) $pickup_number;
-
-        return $this;
-    }
-
-    /**
-     * @return string|null
-     */
-    public function getPickupLocationName(): ?string
-    {
-        return $this->pickup_location_name;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Albert Heijn
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_location_name
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupLocationName(string $pickup_location_name): self
-    {
-        $this->pickup_location_name = $pickup_location_name;
-
-        return $this;
-    }
-
-    /**
-     * @return string
-     */
-    public function getPickupLocationCode(): string
-    {
-        return $this->pickup_location_code;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Albert Heijn
-     * Required: Yes for pickup location
-     *
-     * @param string $pickup_location_code
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setPickupLocationCode($pickup_location_code): self
-    {
-        $this->pickup_location_code = $pickup_location_code;
-
-        return $this;
-    }
-
-    /**
-     * @return null|string
-     * @deprecated Use getRetailNetworkId instead
-     *
-     */
-    public function getPickupNetworkId(): ?string
-    {
-        return $this->getRetailNetworkId();
-    }
-
-    /**
-     * @return null|string
-     */
-    public function getRetailNetworkId(): ?string
-    {
-        return $this->retail_network_id;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Albert Heijn
-     * Required: Yes for pickup location
-     *
-     * @param string $retailNetworkId
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     * @deprecated Use setRetailNetworkId instead
-     */
-    public function setPickupNetworkId($retailNetworkId): self
-    {
-        if (! empty($retailNetworkId)) {
-            throw new \BadMethodCallException('Pickup network id has to be empty in ' . static::class);
-        }
-
-        return $this;
-    }
-
-    /**
-     * Pattern:  [0-9A-Za-z]
-     * Example:  Albert Heijn
-     * Required: Yes for pickup location
-     *
-     * @param string $retailNetworkId
-     *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
-     */
-    public function setRetailNetworkId(string $retailNetworkId): self
-    {
-        if (! empty($retailNetworkId)) {
-            throw new \BadMethodCallException('Retail network id has to be empty in ' . static::class);
-        }
-
-        return $this;
-    }
-
-    /**
-     * The total weight for all items in whole grams
+     * The total weight for all items in whole grams.
      *
      * @return int
      */
     public function getTotalWeight(): int
     {
         if (! empty($this->getPhysicalProperties()['weight'])) {
-            $weight = (int) $this->getPhysicalProperties()['weight'] ?? null;
+            $weight = (int) ($this->getPhysicalProperties()['weight'] ?? null);
+
             if ($weight) {
                 return $weight;
             }
@@ -1771,19 +1674,15 @@ class AbstractConsignment
             $weight += $item->getWeight();
         }
 
-        if ($weight == 0) {
-            $weight = 1;
-        }
-
-        return $weight;
+        return $weight === 0 ? 1 : $weight;
     }
 
     /**
-     * The weight has to be entered in grams
+     * The weight has to be entered in grams.
      *
-     * @param int $weight
+     * @param  int $weight
      *
-     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @return self
      */
     public function setTotalWeight(int $weight): self
     {
@@ -1793,27 +1692,121 @@ class AbstractConsignment
     }
 
     /**
-     * Only package type 1 can have extra options
-     *
-     * @param $option
-     *
      * @return bool
-     * @throws MissingFieldException
+     * @throws \Exception
      */
-    protected function canHaveOption(bool $option = true): bool
+    public function validate(): bool
     {
-        if ($this->getPackageType() === null) {
-            throw new MissingFieldException('Set package type before ' . $option);
+        $validator = ValidatorFactory::create($this->validatorClass);
+
+        if ($validator) {
+            try {
+                $validator
+                    ->validateAll($this)
+                    ->report();
+            } catch (ValidationException $e) {
+                throw new Exception($e->getHumanMessage(), $e->getCode(), $e);
+            }
         }
 
-        return $this->getPackageType() == self::PACKAGE_TYPE_PACKAGE ? $option : false;
+        return true;
     }
 
     /**
      * @return bool
+     * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
-    public function validate(): bool
+    private function isPackage(): bool
     {
+        if (! $this->getPackageType()) {
+            throw new MissingFieldException('Set package_type before setting additional shipment options');
+        }
+
+        return self::PACKAGE_TYPE_PACKAGE === $this->getPackageType();
+    }
+
+    /**
+     * The carrier's local country.
+     *
+     * @return string
+     */
+    abstract public function getLocalCountryCode(): string;
+
+    /**
+     * @return string[]
+     */
+    public function getAllowedDeliveryTypes(): array
+    {
+        return [
+            self::DELIVERY_TYPE_STANDARD_NAME,
+            self::DELIVERY_TYPE_PICKUP_NAME,
+        ];
+    }
+
+    /**
+     * @return string[]
+     */
+    public function getAllowedExtraOptions(): array
+    {
+        return [];
+    }
+
+    /**
+     * @return string[]
+     */
+    public function getAllowedPackageTypes(): array
+    {
+        return [
+            self::PACKAGE_TYPE_PACKAGE_NAME,
+        ];
+    }
+
+    /**
+     * @return string[]
+     */
+    public function getAllowedShipmentOptions(): array
+    {
+        return [];
+    }
+
+    /**
+     * Array of insurance possibilities for the local country.
+     *
+     * @return int[]
+     */
+    protected function getLocalInsurancePossibilities(): array
+    {
+        return [];
+    }
+
+    /**
+     * @param  string $shipmentOption
+     *
+     * @return bool
+     * @throws \MyParcelNL\Sdk\src\Exception\InvalidConsignmentException
+     */
+    private function validateShipmentOption(string $shipmentOption): bool
+    {
+        if (! $this->canHaveShipmentOption($shipmentOption)) {
+            throw new InvalidConsignmentException("$shipmentOption is not allowed in " . static::class);
+        }
+
         return true;
+    }
+
+    /**
+     * @return null|int
+     */
+    final public function getCarrierId(): ?int
+    {
+        return $this->carrier ? $this->carrier->getId() : null;
+    }
+
+    /**
+     * @return null|string
+     */
+    final public function getCarrierName(): ?string
+    {
+        return $this->carrier ? $this->carrier->getName() : null;
     }
 }

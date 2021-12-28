@@ -1,50 +1,60 @@
 <?php
+
 declare(strict_types=1);
-/**
- * If you want to add improvements, please create a fork in our GitHub:
- * https://github.com/myparcelnl
- *
- * @author      Richard Perdaan <support@myparcel.nl>
- * @copyright   2010-2019 MyParcel
- * @license     http://creativecommons.org/licenses/by-nc-nd/3.0/nl/deed.en_US  CC BY-NC-ND 3.0 NL
- * @link        https://github.com/myparcelnl/sdk
- * @since       File available since Release v3.0.0
- */
 
 namespace MyParcelNL\Sdk\src\Factory;
 
+use MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier;
+use MyParcelNL\Sdk\src\Model\Carrier\CarrierFactory;
 use MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment;
-use MyParcelNL\Sdk\src\Model\Consignment\PostNLConsignment;
-use MyParcelNL\Sdk\src\Model\Consignment\BpostConsignment;
-use MyParcelNL\Sdk\src\Model\Consignment\DPDConsignment;
 
 class ConsignmentFactory
 {
+    /**
+     * @param  int $carrierId
+     *
+     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @throws \Exception
+     */
     public static function createByCarrierId(int $carrierId): AbstractConsignment
     {
-        switch ($carrierId) {
-            case PostNLConsignment::CARRIER_ID:
-                return new PostNLConsignment();
-            case BpostConsignment::CARRIER_ID:
-                return new BpostConsignment();
-            case DPDConsignment::CARRIER_ID:
-                return new DPDConsignment();
-        }
+        $carrier = CarrierFactory::createFromId($carrierId);
 
-        throw new \BadMethodCallException("Carrier id $carrierId not found");
+        return self::getConsignmentFromCarrier($carrier);
     }
 
+    /**
+     * @param  string $carrierName
+     *
+     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     * @throws \Exception
+     */
     public static function createByCarrierName(string $carrierName): AbstractConsignment
     {
-        switch ($carrierName) {
-            case PostNLConsignment::CARRIER_NAME:
-                return new PostNLConsignment();
-            case BpostConsignment::CARRIER_NAME:
-                return new BpostConsignment();
-            case DPDConsignment::CARRIER_NAME:
-                return new DPDConsignment();
-        }
+        $carrier = CarrierFactory::createFromName($carrierName);
 
-        throw new \BadMethodCallException("Carrier name $carrierName not found");
+        return self::getConsignmentFromCarrier($carrier);
+    }
+
+    /**
+     * @param  \MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier $carrier
+     *
+     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     */
+    public static function createFromCarrier(AbstractCarrier $carrier): AbstractConsignment
+    {
+        return self::getConsignmentFromCarrier($carrier);
+    }
+
+    /**
+     * @param  \MyParcelNL\Sdk\src\Model\Carrier\AbstractCarrier $carrier
+     *
+     * @return \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment
+     */
+    private static function getConsignmentFromCarrier(AbstractCarrier $carrier): AbstractConsignment
+    {
+        $consignmentClass = $carrier->getConsignmentClass();
+
+        return new $consignmentClass();
     }
 }

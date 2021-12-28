@@ -14,9 +14,11 @@ namespace MyParcelNL\Sdk\src\Services;
 
 use InvalidArgumentException;
 use MyParcelNL\Sdk\src\Exception\MissingFieldException;
+use MyParcelNL\Sdk\src\Factory\ConsignmentFactory;
 use MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment;
 use MyParcelNL\Sdk\src\Model\MyParcelCustomsItem;
 use MyParcelNL\Sdk\src\Support\Arr;
+use MyParcelNL\Sdk\src\Support\Collection;
 
 class ConsignmentEncode
 {
@@ -30,6 +32,9 @@ class ConsignmentEncode
      */
     private $consignments;
 
+    /**
+     * @param AbstractConsignment[] $consignments
+     */
     public function __construct($consignments)
     {
         $this->consignments = $consignments;
@@ -55,7 +60,8 @@ class ConsignmentEncode
              ->encodePickup()
              ->encodePhysicalProperties()
              ->encodeCdCountry()
-             ->encodeMultiCollo();
+             ->encodeMultiCollo()
+             ->encodeDropOffPoint();
 
         return $this->consignmentEncoded;
     }
@@ -87,8 +93,8 @@ class ConsignmentEncode
 
         if ($consignment->getCountry() == AbstractConsignment::CC_NL && $consignment->hasAgeCheck()) {
             $consignmentEncoded['options']['age_check']      = 1;
-            $consignmentEncoded['options']['only_recipient'] = 1;
-            $consignmentEncoded['options']['signature']      = 1;
+            $consignmentEncoded['options']['only_recipient'] = $consignment->canHaveShipmentOption('only_recipient') ? 1 : 0;
+            $consignmentEncoded['options']['signature']      = $consignment->canHaveShipmentOption('signature') ? 1 : 0;
         } elseif ($consignment->hasAgeCheck()) {
             throw new InvalidArgumentException('The age check is not possible with an EU shipment or world shipment');
         }
@@ -133,6 +139,7 @@ class ConsignmentEncode
                 'person'      => $consignment->getPerson(),
                 'postal_code' => $consignment->getPostalCode(),
                 'city'        => (string) $consignment->getCity(),
+                'region'      => (string) $consignment->getRegion(),
                 'email'       => (string) $consignment->getEmail(),
                 'phone'       => (string) $consignment->getPhone(),
             ],
@@ -151,9 +158,9 @@ class ConsignmentEncode
     }
 
     /**
-     * @return $this
+     * @return self
      */
-    private function encodeStreet()
+    private function encodeStreet(): self
     {
         $consignment              = Arr::first($this->consignments);
         $this->consignmentEncoded = $consignment->encodeStreet($this->consignmentEncoded);
@@ -163,9 +170,9 @@ class ConsignmentEncode
 
     /**
      * Set pickup address
-     * @return $this
+     * @return self
      */
-    private function encodePickup()
+    private function encodePickup(): self
     {
         /** @var AbstractConsignment $consignment */
         $consignment = Arr::first($this->consignments);
@@ -195,10 +202,10 @@ class ConsignmentEncode
     }
 
     /**
-     * @return $this
+     * @return self
      * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
-    private function encodePhysicalProperties()
+    private function encodePhysicalProperties(): self
     {
         $consignment = Arr::first($this->consignments);
         if (empty($consignment->getPhysicalProperties()) && $consignment->getPackageType() != AbstractConsignment::PACKAGE_TYPE_DIGITAL_STAMP) {
@@ -214,10 +221,10 @@ class ConsignmentEncode
     }
 
     /**
-     * @return $this
+     * @return self
      * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
-    private function encodeCdCountry()
+    private function encodeCdCountry(): self
     {
         /**
          * @var \MyParcelNL\Sdk\src\Model\Consignment\AbstractConsignment $consignment
@@ -259,11 +266,12 @@ class ConsignmentEncode
     /**
      * Encode product for the request
      *
+     * @param  string              $currency
+     * @param  MyParcelCustomsItem $customsItem
+     *
      * @return array
-     * @var string              $currency
-     * @var MyParcelCustomsItem $customsItem
      */
-    private function encodeCdCountryItem($customsItem, $currency = 'EUR')
+    private function encodeCdCountryItem($customsItem, $currency = 'EUR'): array
     {
         $item = [
             'description'    => $customsItem->getDescription(),
@@ -285,7 +293,7 @@ class ConsignmentEncode
      *
      * @throws \MyParcelNL\Sdk\src\Exception\MissingFieldException
      */
-    private function validateCdConsignment(AbstractConsignment $consignment)
+    private function validateCdConsignment(AbstractConsignment $consignment): void
     {
         if (empty($consignment->getItems())) {
             throw new MissingFieldException('Product data must be set for international MyParcel shipments. Use addItem().');
@@ -304,7 +312,7 @@ class ConsignmentEncode
      * @return ConsignmentEncode
      * @throws \Exception
      */
-    private function encodeMultiCollo()
+    private function encodeMultiCollo(): self
     {
         /** @var AbstractConsignment $first */
         $first = Arr::first($this->consignments);
@@ -339,5 +347,36 @@ class ConsignmentEncode
     private function normalizeAutoSaveRecipientAddress(AbstractConsignment $consignment): int
     {
         return (int) $consignment->isSaveRecipientAddress();
+    }
+
+    /**
+     * @return self
+     */
+    private function encodeDropOffPoint(): self
+    {
+        $consignment  = Arr::first($this->consignments);
+        $dropOffPoint = $consignment->getDropOffPoint();
+
+        if (! $dropOffPoint) {
+            return $this;
+        }
+
+        $options = new Collection([
+            'box_number'        => $dropOffPoint->getBoxNumber(),
+            'cc'                => $dropOffPoint->getCc(),
+            'city'              => $dropOffPoint->getCity(),
+            'location_code'     => $dropOffPoint->getLocationCode(),
+            'location_name'     => $dropOffPoint->getLocationName(),
+            'number'            => $dropOffPoint->getNumber(),
+            'number_suffix'     => $dropOffPoint->getNumberSuffix(),
+            'postal_code'       => $dropOffPoint->getPostalCode(),
+            'region'            => $dropOffPoint->getRegion(),
+            'retail_network_id' => $dropOffPoint->getRetailNetworkId(),
+            'state'             => $dropOffPoint->getState(),
+            'street'            => $dropOffPoint->getStreet(),
+        ]);
+
+        $this->consignmentEncoded['drop_off_point'] = $options->toArrayWithoutNull();
+        return $this;
     }
 }
